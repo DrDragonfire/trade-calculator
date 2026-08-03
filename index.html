@@ -127,6 +127,12 @@
       </div>
     </div>
 
+    <div class="field">
+      <label class="fieldlabel" for="liq">Liquidation price <span class="opt">— read it off the card</span></label>
+      <input type="number" id="liq" step="any" placeholder="blank = rough estimate">
+      <p class="note">Involio liquidates far closer than 1/leverage. Type the real number from the Edit Trade screen.</p>
+    </div>
+
     <div class="divider"></div>
 
     <div class="field">
@@ -139,8 +145,8 @@
     </div>
     <div class="field">
       <label class="fieldlabel" for="cost">Round-trip cost %</label>
-      <input type="number" id="cost" step="0.01" value="0.18">
-      <p class="note">0.18 = market fills. Use 0.12 for limit orders.</p>
+      <input type="number" id="cost" step="0.01" value="0.157">
+      <p class="note">0.157 = measured from your own log, market fills. Recompute weekly.</p>
     </div>
   </div>
 
@@ -188,7 +194,7 @@
 <script>
 (function(){
   var $ = function(id){ return document.getElementById(id); };
-  var ids = ['entry','tp','margin','lev','stop','now','cost'];
+  var ids = ['entry','tp','margin','lev','stop','now','cost','liq'];
 
   function money(v){
     var a = Math.abs(v);
@@ -218,6 +224,7 @@
     var stop   = parseFloat($('stop').value);
     var now    = parseFloat($('now').value);
     var costR  = parseFloat($('cost').value);
+    var liqIn  = parseFloat($('liq').value);
 
     if(!(entry>0) || !(tp>0) || !(margin>0) || !(lev>0) || !(costR>=0)){
       $('net').textContent = '—';
@@ -242,9 +249,16 @@
     var net      = gross - cost;
     var coverage = costR > 0 ? move / costR : Infinity;
 
-    // liquidation (approx, before maintenance margin)
-    var liqDist  = 100 / lev;
-    var liqPrice = isLong ? entry * (1 - liqDist/100) : entry * (1 + liqDist/100);
+    // liquidation - use the card value when given, else calibrated estimate
+    var liqPrice, liqDist, liqMeasured = false;
+    if(liqIn > 0){
+      liqPrice = liqIn;
+      liqDist  = Math.abs(liqIn - entry) / entry * 100;
+      liqMeasured = true;
+    } else {
+      liqDist  = 52 / lev;   // Involio runs ~45-68% of the naive 100/lev
+      liqPrice = isLong ? entry * (1 - liqDist/100) : entry * (1 + liqDist/100);
+    }
 
     // hero
     $('net').textContent = money(net);
@@ -270,11 +284,29 @@
       f += flag('ok','Passes','Move clears cost by '+coverage.toFixed(1)+'×.');
     }
 
-    if(liqDist < 5){
+    if(liqDist < 3){
       f += flag('bad','Leverage','Liquidation sits '+pct(liqDist,1)+' away at '+price(liqPrice)+
-        ' — inside a normal day\'s range. Drop the leverage.');
-    } else if(liqDist < 9){
+        ' — inside a normal hour. Drop the leverage.');
+    } else if(liqDist < 6){
       f += flag('warn','Leverage','Liquidation '+pct(liqDist,1)+' away. Fine for BTC, tight for alts.');
+    }
+    if(!liqMeasured){
+      f += flag('warn','Estimate','Liquidation is estimated. Read the real number off the card and type it in — the estimate has been off by up to 30%.');
+    }
+    if(stop > 0){
+      var sMove = Math.abs(stop - entry) / entry * 100;
+      var sWrong = isLong ? (stop > entry) : (stop < entry);
+      if(sWrong){
+        f += flag('bad','Stop','That stop is on the wrong side of entry for a '+dir.toLowerCase()+'.');
+      } else if(sMove >= liqDist){
+        f += flag('bad','Stop','Stop sits at or beyond liquidation — it will never fire. You are risking the whole '+money(margin)+'.');
+      } else if(sMove > liqDist * 0.85){
+        f += flag('warn','Stop','Stop is '+pct(sMove,1)+' out against liquidation at '+pct(liqDist,1)+'. One wick clears both.');
+      } else {
+        f += flag('ok','Stop','Stop at '+price(stop)+' is inside liquidation. Real floor.');
+      }
+    } else {
+      f += flag('bad','Stop','No stop. Worst case is the full '+money(margin)+'.');
     }
 
     if(now > 0){
@@ -315,8 +347,11 @@
               '</td><td class="'+(liq?'neg':'')+'">'+ (loss/margin*100).toFixed(0) +'%</td></tr>';
     }
     $('risktable').innerHTML = html;
-    $('liqnote').innerHTML = 'Liquidation approx '+pct(liqDist,1)+' away at '+price(liqPrice)+
-      '. Real liquidation is slightly closer once maintenance margin is applied. At liquidation the exchange closes you and keeps the remaining margin — that is why the loss jumps to the full '+money(margin)+'.';
+    var halfDist = liqDist / 2;
+    var suggStop = isLong ? entry * (1 - halfDist/100) : entry * (1 + halfDist/100);
+    $('liqnote').innerHTML = 'Liquidation '+(liqMeasured?'':'estimated ')+pct(liqDist,1)+' away at '+price(liqPrice)+
+      '. At liquidation the exchange closes you and keeps the remaining margin — that is why the loss jumps to the full '+money(margin)+
+      '. <b>Suggested stop: '+price(suggStop)+'</b> — about half the distance to liquidation, which leaves room for noise and still caps the loss.';
 
     // stop panel
     if(stop > 0){
